@@ -25,7 +25,7 @@
 
 
 
-This repo is the official implementation for "Towards Transferable Targeted 3D Adversarial Attack in the Physical World" (CVPR, 2024)
+This repository is the official implementation for "Towards Transferable Targeted 3D Adversarial Attack in the Physical World" (CVPR, 2024). We design a novel framework named **TT3D** that could rapidly reconstruct from few multi-view images into **T**ransferable **T**argeted **3D** textured meshes.
 
 <div align="center">
 <img src="asserts/framework_tt3d.png" width="100%">
@@ -120,6 +120,8 @@ After running the adversarial optimization, you can find the logs in the logs/ad
 ```bash
 bash scripts/run_evaluation.sh $metadata_path $workspace_path
 ```
+
+By default, the evaluation model is set as 'resnet' (ResNet 101) and you could change to any other classification models (pretrained on ImageNet).
 
  For Blender, a comprehensive 3D tool available at [Blender.org](https://www.blender.org/), and Meshlab, which can be accessed at [Meshlab.net](https://www.meshlab.net/), the 3D models and textures are manually imported and screenshots are captured from various perspectives. 
 
