@@ -31,7 +31,7 @@ This repo is the official implementation for "Towards Transferable Targeted 3D A
 <img src="asserts/framework_tt3d.png" width="100%">
 </div>
 
-## 0. Quick Start
+## ⚙️ 0. Quick Start
 - clone this repo:
 ```bash
 git clone https://github.com/Aries-iai/TT3D.git
@@ -54,7 +54,7 @@ pip install git+https://github.com/facebookresearch/pytorch3d.git
 ```
 
 
-## 1. Data Prepare
+## 📚 1. Data Prepare
 The dataset we used were from two parts: [Viewfool](https://github.com/Heathcliff-saku/ViewFool_) (NIPS 2022) and [IM3D](https://github.com/Heathcliff-saku/VIAT) (ICCV 2023), the source files can be downloaded in such two repos and extracted in the following format by randomly selecting 100 objects:
 
 ```
@@ -74,7 +74,7 @@ The dataset we used were from two parts: [Viewfool](https://github.com/Heathclif
          -- test/
          -- val/
 ```
-## 2. Run Scripts
+## 🪄 2. Run Scripts
 
 ### 2.1 Reconstruction
 
@@ -113,13 +113,13 @@ bash scripts/run_adv_optimization.sh $metadata_path $workspace_path
 
 After running the adversarial optimization, you can find the logs in the logs/adv_optimization/ directory. The logs are named according to the format `${OBJECT_NAME}_${TARGET_NUMBER}:${TARGET_LABEL}.log`, where `${OBJECT_NAME}` is derived from the last segment of your `$metadata_path`, `${TARGET_NUMBER}` is the specified index and `${TARGET_LABEL}` is the actual ImageNet label. This naming convention helps you easily track and review the optimization outputs for different objects and corresponding target labels.
 
-## 3. Evaluation
+## 📈 3. Evaluation
 
 **Evaluation of 3D Adversarial Objects:** To evaluate the effectiveness of our 3D adversarial objects, we utilize three rendering tools: Nvdiffrast, Blender, and Meshlab. Images are generated from randomly sampled viewpoints to ensure diverse visual representations. For automated rendering, [Nvdiffrast](https://github.com/NVlabs/nvdiffrast) is used, where the process is integrated into our pipeline. For Blender, a comprehensive 3D tool available at [Blender.org](https://www.blender.org/), and Meshlab, which can be accessed at [Meshlab.net](https://www.meshlab.net/), the 3D models and textures are manually imported and screenshots are captured from various perspectives. These images are then classified to determine how effectively they mislead the targeted recognition model. The results across these renderers are compared to analyze misclassification rates and assess each method's capability in generating effective adversarial images under random viewing conditions.
 
 
 
-## Citation
+## :black_nib: Citation
 
 If you find our work useful, please consider citing our paper:
 ```
@@ -132,6 +132,6 @@ If you find our work useful, please consider citing our paper:
 }
 ```
 
-## Acknowledgement 
+## 🔔 Acknowledgement 
 
 Reconstruction code is from [nerf2mesh](https://github.com/ashawkey/nerf2mesh)(ICCV 2023). Thanks for such a great project !
