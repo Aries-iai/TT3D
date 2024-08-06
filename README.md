@@ -117,7 +117,9 @@ After running the adversarial optimization, you can find the logs in the logs/ad
 
 **Evaluation of 3D Adversarial Objects:** To evaluate the effectiveness of our 3D adversarial objects, we utilize three rendering tools: Nvdiffrast, Blender, and Meshlab. Images are generated from randomly sampled viewpoints to ensure diverse visual representations. For automated rendering, [Nvdiffrast](https://github.com/NVlabs/nvdiffrast) is used, where the process is integrated into our pipeline. For Blender, a comprehensive 3D tool available at [Blender.org](https://www.blender.org/), and Meshlab, which can be accessed at [Meshlab.net](https://www.meshlab.net/), the 3D models and textures are manually imported and screenshots are captured from various perspectives. These images are then classified to determine how effectively they mislead the targeted recognition model. The results across these renderers are compared to analyze misclassification rates and assess each method's capability in generating effective adversarial images under random viewing conditions.
 
-
+<div align="center">
+<img src="asserts/combined_grid_with_text.png" width="100%">
+</div>
 
 ## :black_nib: Citation
 
