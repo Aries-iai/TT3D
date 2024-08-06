@@ -44,4 +44,4 @@ if [ -z "$TARGET_INFO" ]; then
 fi
 
 # Rename the temporary log file to include both the target number and label
-mv logs/adv_optimization/${OBJECT_NAME}_temp.log logs/adv_optimization/${OBJECT_NAME}_${TARGET_INFO}.log
+mv "logs/adv_optimization/${OBJECT_NAME}_temp.log" "logs/adv_optimization/${OBJECT_NAME}_${TARGET_INFO}.log"

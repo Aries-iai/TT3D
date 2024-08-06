@@ -1,12 +1,13 @@
-import pdb
-import json
 import torch
 import argparse
+from PIL import Image
+from nerf.provider import NeRFDataset
+from nerf.network import NeRFNetwork
+from nerf.utils import *
 from torchvision import models as model_load
+import torchvision.transforms as transforms
+from torchvision.transforms import Resize
 
-from nerf.utils_adv import *
-from nerf.network_adv import NeRFNetwork
-from nerf.provider_adv import NeRFDataset
 
 class NormalizeByChannelMeanStd(torch.nn.Module):
     def __init__(self, mean, std):
@@ -19,7 +20,7 @@ class NormalizeByChannelMeanStd(torch.nn.Module):
     def forward(self, x):
         return (x - self.mean) / self.std
     
-def get_surrogate_model(model_name):
+def get_evaluation_model(model_name):
     resnet101 = model_load.resnet101(pretrained=True)
     densenet121 = model_load.densenet121(pretrained=True)
     networks = {
@@ -32,27 +33,93 @@ def get_surrogate_model(model_name):
     normalize = NormalizeByChannelMeanStd(mean, std)
     return nn.Sequential(resize_transform, normalize, networks[model_name].eval()).to(device)
 
-if __name__ == '__main__':
+
+def load_checkpoint(model, checkpoint_path, device):
+    checkpoint_dict = torch.load(checkpoint_path, map_location=device)
+    if 'model' not in checkpoint_dict:
+        model.load_state_dict(checkpoint_dict)
+    else:
+        missing_keys, unexpected_keys = model.load_state_dict(checkpoint_dict['model'], strict=False)
+    
+    if model.cuda_ray and 'mean_density' in checkpoint_dict:
+        model.mean_density = checkpoint_dict['mean_density']
+    model.eval()
+
+def extract_target_label(workspace_path, object_name):
+    log_file_pattern = f"logs/adv_optimization/{object_name}_*.log"
+    # Find the first log file matching the pattern
+    log_file = glob.glob(log_file_pattern)
+    target_label = int(log_file[0].split(":")[0].split('_')[-1])    
+    return target_label
+
+def setup_model(opt, device):
+    model = NeRFNetwork(opt)
+    model.to(device)
+    checkpoint = opt.workspace + "checkpoints/ngp_stage1_ep0400.pth"
+    load_checkpoint(model, checkpoint, device)
+    return model
+
+def main(opt):
+    device = 'cuda' if opt.cuda_ray else 'cpu'
+    opt.refine_steps = [int(round(x * opt.iters)) for x in opt.refine_steps_ratio]
+    loader = NeRFDataset(opt, device=device, type=opt.train_split).dataloader()
+    model = setup_model(opt, device)
+    
+    object_name = opt.path.split(r'/')[-2]
+    target_label = extract_target_label(opt.workspace, object_name)
+
+    cnt, num = 0, 0
+    net = get_evaluation_model(opt.evaluation_model)
+    print(target_label)
+    
+    for data in loader:
+        num += process_data_batch(data, model, net, target_label)
+        cnt += 1
+    
+    print(f"The ASR is: {num/cnt}")
+
+def process_data_batch(data, model, net, target_label):
+    rays_o, rays_d = data['rays_o'], data['rays_d']
+    index = data['index']
+    cam_near_far = data.get('cam_near_far')
+    
+    images = data['images']
+    N, C = images.shape
+    bg_color = 1
+    shading = 'full'
+    mvp = data['mvp'].squeeze(0)
+    H, W = data['H'], data['W']
+    
+    outputs = model.render_stage1(rays_o, rays_d, mvp, H, W, index=index, bg_color=bg_color, shading=shading, **vars(opt))
+    pred_rgb = outputs['image']
+    
+    return evaluate_prediction(pred_rgb, H, W, net, target_label)
+
+def evaluate_prediction(pred_rgb, H, W, net, target_label):
+    resize_transform = Resize((224, 224))
+    pred_image = pred_rgb.reshape(H, W, 3)
+    image_predicted = pred_image.permute(2, 0, 1).unsqueeze(0)
+    output = net(image_predicted)
+    pred = nn.functional.softmax(output, dim=1).topk(1)
+    print(pred.indices.item())
+
+    return pred.indices.item() == target_label
+        
+
+if __name__ == "__main__":
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('path', type=str)
     parser.add_argument('-O', action='store_true', help="recommended settings")
-    parser.add_argument('--workspace', type=str, default='workspace')
-    parser.add_argument('--target_label', type=str, default='random', help="Specific target label or 'random' for random selection between 0 and 999.")
-    parser.add_argument('--surrogate_model', type=str, default='resnet', help="Type of surrogate model to use, default is 'resnet'.")
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--workspace', type=str, default='/mnt/data1/huangyao/trial_airliner_01')
+    parser.add_argument('--evaluation_model', type=str, default='resnet', help="Type of surrogate model to use, default is 'resnet'.")
     parser.add_argument('--stage', type=int, default=0, help="training stage")
     parser.add_argument('--ckpt', type=str, default='latest')
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
     parser.add_argument('--sdf', action='store_true', help="use sdf instead of density for nerf")
     parser.add_argument('--tcnn', action='store_true', help="use tcnn's gridencoder")
     parser.add_argument('--progressive_level', action='store_true', help="progressively increase max_level")
-
-    ### testing options
-    parser.add_argument('--test', action='store_true', help="test mode")
-    parser.add_argument('--test_no_video', action='store_true', help="test mode: do not save video")
-    parser.add_argument('--test_no_mesh', action='store_true', help="test mode: do not save mesh")
-    parser.add_argument('--camera_traj', type=str, default='', help="nerfstudio compatible json file for camera trajactory")
 
     ### dataset options
     parser.add_argument('--data_format', type=str, default='nerf', choices=['nerf', 'colmap', 'dtu'])
@@ -71,7 +138,7 @@ if __name__ == '__main__':
     parser.add_argument('--enable_dense_depth', action='store_true', help="use dense depth from omnidepth calibrated to colmap pts3d, only valid if using --data_formt colmap")
 
     ### training options
-    parser.add_argument('--iters', type=int, default=40000, help="training iters")
+    parser.add_argument('--iters', type=int, default=25000, help="training iters")
     parser.add_argument('--lr', type=float, default=1e-2, help="initial learning rate")
     parser.add_argument('--lr_vert', type=float, default=1e-4, help="initial learning rate for vert optimization")
     parser.add_argument('--pos_gradient_boost', type=float, default=1, help="nvdiffrast option")
@@ -89,21 +156,11 @@ if __name__ == '__main__':
     parser.add_argument('--enable_offset_nerf_grad', action='store_true', help="allow grad to pass through nerf to train vertices offsets in stage 1, only work for small meshes (e.g., synthetic dataset)")
     parser.add_argument('--n_eval', type=int, default=5, help="eval $ times during training")
     parser.add_argument('--n_ckpt', type=int, default=50, help="save $ times during training")
-    
+
     # batch size related
     parser.add_argument('--num_rays', type=int, default=4096, help="num rays sampled per image for each training step")
     parser.add_argument('--adaptive_num_rays', action='store_true', help="adaptive num rays for more efficient training")
     parser.add_argument('--num_points', type=int, default=2 ** 18, help="target num points for each training step, only work with adaptive num_rays")
-
-    # stage 0 regularizations
-    parser.add_argument('--lambda_density', type=float, default=0, help="loss scale")
-    parser.add_argument('--lambda_entropy', type=float, default=0, help="loss scale")
-    parser.add_argument('--lambda_tv', type=float, default=1e-8, help="loss scale")
-    parser.add_argument('--lambda_depth', type=float, default=0.1, help="loss scale")
-    parser.add_argument('--lambda_specular', type=float, default=1e-5, help="loss scale")
-    parser.add_argument('--lambda_eikonal', type=float, default=0.1, help="loss scale")
-    parser.add_argument('--lambda_rgb', type=float, default=1, help="loss scale")
-    parser.add_argument('--lambda_mask', type=float, default=0.1, help="loss scale")
 
     # stage 1 regularizations
     parser.add_argument('--wo_smooth', action='store_true', help="disable all smoothness regularizations")
@@ -112,7 +169,6 @@ if __name__ == '__main__':
     parser.add_argument('--lambda_lap', type=float, default=0.001, help="loss scale")
     parser.add_argument('--lambda_normal', type=float, default=0, help="loss scale")
     parser.add_argument('--lambda_edgelen', type=float, default=0, help="loss scale")
-    parser.add_argument('--lambda_cd', type=float, default=3000, help="loss scale")
 
     # unused
     parser.add_argument('--contract', action='store_true', help="apply L-INF ray contraction as in mip-nerf, only work for bound > 1, will override bound to 2.")
@@ -121,16 +177,6 @@ if __name__ == '__main__':
     parser.add_argument('--color_space', type=str, default='srgb', help="Color space, supports (linear, srgb)")
     parser.add_argument('--ind_dim', type=int, default=0, help="individual code dim, 0 to turn off")
     parser.add_argument('--ind_num', type=int, default=500, help="number of individual codes, should be larger than training dataset size")
-
-    ### mesh options
-    # stage 0
-    parser.add_argument('--mcubes_reso', type=int, default=512, help="resolution for marching cubes")
-    parser.add_argument('--env_reso', type=int, default=256, help="max layers (resolution) for env mesh")
-    parser.add_argument('--decimate_target', type=float, default=3e5, help="decimate target for number of triangles, <=0 to disable")
-    parser.add_argument('--mesh_visibility_culling', action='store_true', help="cull mesh faces based on visibility in training dataset")
-    parser.add_argument('--visibility_mask_dilation', type=int, default=5, help="visibility dilation")
-    parser.add_argument('--clean_min_f', type=int, default=8, help="mesh clean: min face count for isolated mesh")
-    parser.add_argument('--clean_min_d', type=int, default=5, help="mesh clean: min diameter for isolated mesh")
 
     # stage 1
     parser.add_argument('--ssaa', type=int, default=2, help="super sampling anti-aliasing ratio")
@@ -151,105 +197,5 @@ if __name__ == '__main__':
     parser.add_argument('--max_spp', type=int, default=1, help="GUI rendering max sample per pixel")
 
     opt = parser.parse_args()
-
     opt.cuda_ray = True
-
-    if opt.O:
-        opt.fp16 = True
-        opt.preload = True
-        opt.mark_untrained = True
-        opt.random_image_batch = True
-        opt.mesh_visibility_culling = True
-        opt.adaptive_num_rays = True
-        opt.refine = True
-    
-    if opt.sdf:
-        opt.density_thresh = 0.001 # use smaller thresh to suit density scale from sdf
-        if opt.stage == 0:
-            opt.progressive_level = True
-
-        # contract background
-        if opt.bound > 1:
-            opt.contract = True
-        
-        opt.enable_offset_nerf_grad = True # lead to more sharp texture
-
-        # just perform remesh periodically
-        opt.refine_decimate_ratio = 0 # disable decimation
-        opt.refine_size = 0 # disable subdivision
-        
-    if opt.contract:
-        # mark untrained is not very correct in contraction mode...
-        opt.mark_untrained = False
-    
-    # best rendering quality at the sacrifice of mesh quality
-    if opt.wo_smooth:
-        opt.lambda_offsets = 0
-        opt.lambda_lap = 0
-        opt.lambda_normal = 0
-    
-    if opt.enable_sparse_depth:
-        print(f'[WARN] disable random image batch when depth supervision is used!')
-        opt.random_image_batch = False
-    
-    if opt.patch_size > 1:
-        # assert opt.patch_size > 16, "patch_size should > 16 to run LPIPS loss."
-        assert opt.num_rays % (opt.patch_size ** 2) == 0, "patch_size ** 2 should be dividable by num_rays."
-
-    # convert ratio to steps
-    opt.refine_steps = [int(round(x * opt.iters)) for x in opt.refine_steps_ratio]
-    # seed_everything(opt.seed)
-    model = NeRFNetwork(opt)
-    
-    criterion = torch.nn.MSELoss(reduction='none')
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    optimizer = lambda model: torch.optim.Adam(model.get_params(opt.lr), eps=1e-15)
-    print('The number of params: {}'.format(len((model.get_params(opt.lr)))))
-
-    train_loader = NeRFDataset(opt, device=device, type=opt.train_split).dataloader()
-
-    max_epoch = np.ceil(opt.iters / len(train_loader)).astype(np.int32)
-    save_interval = max(1, max_epoch // max(opt.n_ckpt, 1))
-    eval_interval = max(1, max_epoch // max(opt.n_eval, 1))
-    print(f'[INFO] max_epoch {max_epoch}, eval every {eval_interval}, save every {save_interval}.')
-
-    if opt.ind_dim > 0:
-        assert len(train_loader) < opt.ind_num, f"[ERROR] dataset too many frames: {len(train_loader)}, please increase --ind_num to at least this number!"
-    scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 0.01 + 0.99 * (iter / 500) if iter <= 500 else 0.1 ** ((iter - 500) / (opt.iters - 500)))
-
-    surrogate_model = get_surrogate_model(opt.surrogate_model)
-    with open('dataset/imagenet-simple-labels.json', 'r') as file:
-        imagenet_labels = json.load(file)
-    if opt.target_label.lower() == 'random':
-        target = random.randint(0, 999)
-    else:
-        try:
-            target = int(opt.target_label)
-            if target < 1 or target > 999:
-                raise ValueError("Target label must be between 0 and 999.")
-        except ValueError:
-            print("Invalid target_label. It must be 'random' or an integer between 0 and 999.")
-            exit(1)
-    print(f'We are attacking object towards {target}:{imagenet_labels[target]}')
-    
-    trainer = Trainer('ngp', opt, surrogate_model, model, target, device=device, workspace=opt.workspace, optimizer=optimizer, criterion=criterion, ema_decay=0.95 if opt.stage == 0 else None, fp16=opt.fp16,\
-        lr_scheduler=scheduler, scheduler_update_every_step=True, use_checkpoint=opt.ckpt, eval_interval=eval_interval, save_interval=save_interval)
-    valid_loader = NeRFDataset(opt, device=device, type='val').dataloader()
-    trainer.metrics = [PSNRMeter(),]
-    trainer.train(train_loader, valid_loader, max_epoch)
-    
-    # last validation
-    trainer.metrics = [PSNRMeter(), SSIMMeter(), LPIPSMeter(device=device)]
-    trainer.evaluate(valid_loader)
-
-    # also test
-    test_loader = NeRFDataset(opt, device=device, type='test').dataloader()
-    if test_loader.has_gt:
-        trainer.evaluate(test_loader) # blender has gt, so evaluate it.
-    trainer.test(test_loader, write_video=True) # test and save video
-    
-    if opt.stage == 1:
-        trainer.export_stage1(resolution=opt.texture_size)
-    else:
-        trainer.save_mesh(resolution=opt.mcubes_reso, decimate_target=opt.decimate_target, dataset=train_loader._data if opt.mesh_visibility_culling else None)
+    main(opt)
